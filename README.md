@@ -13,13 +13,19 @@ Character names in Darkstone are not stored as plain text. Instead, they are obf
 #### Identifying Character Sections
 The tool identifies character names by performing a linear scan of the `characters.lpl` file and applying several filters and heuristics to distinguish genuine names from metadata or other binary data.
 
-1.  **Structural Markers:** Valid character slots are consistently preceded by a specific byte sequence:
-    - The byte immediately before the name is always `0xAF`.
-    - The byte before that (at `offset - 2`) is typically `0xB4`, `0xB3`, or `0xB7`.
-2.  **Printable Character Check:** The first byte of the potential name (after XOR decoding) must be a printable ASCII character (range 32–126).
-3.  **Metadata Filtering:** Certain printable sequences that appear in metadata headers (e.g., starting with `F`, `7`, or `\`) are explicitly skipped.
-4.  **Padding Heuristic:** Genuine character names are followed by significant padding of `0xEB` bytes (which represents XORed nulls). The tool expects at least 15 bytes of `0xEB` padding (or fewer if the name itself is very long).
+1.  **Structural Markers:** Valid character slots are consistently preceded by specific byte sequences:
+    - **Primary Marker:** The byte immediately before the name is typically `0xAF`, `0xE0`, `0xF6`, `0xF7`, or `0xF1`.
+    - **Secondary Marker:** The byte at `offset - 2` must match one of several structural markers (e.g., `0xB4`, `0xB3`, `0xB7`, `0xB5`, `0xB6`, `0x1A`, `0x17`, `0x13`, `0x19`, `0xA2`, `0xB0`, `0xE1`, `0xAD`).
+2.  **Character Encoding:** 
+    - Names are decoded using the **ISO-8859-1** charset.
+    - This allows support for extended ASCII characters, including German umlauts like `ä` and `ö`.
+3.  **Printable Character Check:** The first byte of the potential name (after XOR decoding) must be a printable character (ASCII >= 32).
+4.  **Metadata Filtering:** Certain printable sequences that appear in metadata headers (e.g., starting with `F`, `7`, `\`, or `D`) are explicitly skipped. A specific check is also performed for the sequence `P7\` to avoid metadata false positives.
+5.  **Padding Heuristic:** Genuine character names are followed by significant padding of `0xEB` bytes (which represents XORed nulls). The tool expects at least 15 bytes of `0xEB` padding.
 6.  **De-duplication:** The tool ensures that identified offsets are at least 32 bytes apart to avoid partial or duplicate name detection.
+
+#### Persistence ("Sticky" Files)
+The tool remembers the last successfully opened save file using system preferences. Upon restart, it automatically attempts to load the previous file, skipping the automatic scan if successful. The file chooser also defaults to the directory of the currently loaded file.
 
 #### Renaming Logic
 When a name is changed, the tool performs the following steps:

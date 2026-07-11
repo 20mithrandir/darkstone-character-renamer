@@ -5,10 +5,12 @@ import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.util.prefs.Preferences;
 
 public class Main extends JFrame {
     private static final int XOR_KEY = 0xEB;
@@ -20,6 +22,7 @@ public class Main extends JFrame {
     private static final int START_OFFSET = 0x669A;
     private static final int MAX_PAGES = 50;
     private static final int MAX_SLOTS = 186;
+    private static final String PREF_LAST_FILE = "last_lpl_file";
 
     private Path currentLplPath;
     private byte[] fileData;
@@ -31,7 +34,7 @@ public class Main extends JFrame {
     private final JLabel statusLabel;
 
     public Main() {
-        setTitle("DarkStone Character Renamer");
+        setTitle("DarkStone Character Renamer v1.0.0");
         setSize(800, 450); // Increased default size
         setDefaultCloseOperation(EXIT_ON_CLOSE);
         setLayout(new BorderLayout());
@@ -39,6 +42,7 @@ public class Main extends JFrame {
         characterList = new JList<>();
         nameField = new JTextField();
         saveButton = new JButton("Save Name");
+        JButton openButton = new JButton("Open Save...");
         statusLabel = new JLabel("Searching for DarkStone...");
 
         characterList.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
@@ -57,6 +61,8 @@ public class Main extends JFrame {
 
         saveButton.setEnabled(false);
         saveButton.addActionListener(e -> performRename());
+
+        openButton.addActionListener(e -> openManualFile());
 
         JButton quitButton = new JButton("Quit");
         quitButton.addActionListener(e -> System.exit(0));
@@ -93,8 +99,13 @@ public class Main extends JFrame {
         splitPane.setDividerLocation(350);
         splitPane.setResizeWeight(0.3); // Favor the list panel but allow some right-panel growth
 
+        JPanel footerPanel = new JPanel(new BorderLayout());
+        footerPanel.setBorder(BorderFactory.createEmptyBorder(5, 5, 5, 5));
+        footerPanel.add(statusLabel, BorderLayout.CENTER);
+        footerPanel.add(openButton, BorderLayout.EAST);
+
         add(splitPane, BorderLayout.CENTER);
-        add(statusLabel, BorderLayout.SOUTH);
+        add(footerPanel, BorderLayout.SOUTH);
 
         setLocationRelativeTo(null);
         
@@ -104,6 +115,17 @@ public class Main extends JFrame {
     }
 
     private void findAndLoadFile() {
+        // 0. Check preferences for sticky file
+        Preferences prefs = Preferences.userNodeForPackage(Main.class);
+        String lastFile = prefs.get(PREF_LAST_FILE, null);
+        if (lastFile != null) {
+            Path lastPath = Paths.get(lastFile);
+            if (Files.exists(lastPath)) {
+                loadLplFile(lastPath);
+                return;
+            }
+        }
+
         // 1. Check current directory first
         Path currentDirFile = Path.of("save", "characters", "characters.lpl");
         if (Files.exists(currentDirFile)) {
@@ -137,11 +159,18 @@ public class Main extends JFrame {
         }
 
         // 3. Fallback to File Chooser
+        openManualFile();
+    }
+
+    private void openManualFile() {
         JFileChooser chooser = new JFileChooser();
+        if (currentLplPath != null && Files.exists(currentLplPath)) {
+            chooser.setCurrentDirectory(currentLplPath.getParent().toFile());
+        }
         chooser.setDialogTitle("Select Darkstone characters.lpl");
         if (chooser.showOpenDialog(this) == JFileChooser.APPROVE_OPTION) {
             loadLplFile(chooser.getSelectedFile().toPath());
-        } else {
+        } else if (currentLplPath == null) {
             statusLabel.setText("No file loaded. Please select characters.lpl manually.");
         }
     }
@@ -206,17 +235,19 @@ public class Main extends JFrame {
             characterRecords.clear();
 
             // We use a linear scan but with extremely high quality requirements to avoid garbage.
-            // A valid name MUST be preceded by 0xAF and followed by significant 0xEB padding.
+            // A valid name MUST be preceded by specific markers and followed by significant 0xEB padding.
             for (int i = 1; i < fileData.length - MAX_NAME_LEN; i++) {
-                if ((fileData[i - 1] & 0xFF) == 0xAF) {
-                    checkAndAddName(i);
-                }
+                checkAndAddName(i);
             }
 
             DefaultListModel<CharacterRecord> model = new DefaultListModel<>();
             for (CharacterRecord r : characterRecords) model.addElement(r);
             characterList.setModel(model);
             statusLabel.setText("Loaded: " + path);
+
+            // Save to preferences
+            Preferences prefs = Preferences.userNodeForPackage(Main.class);
+            prefs.put(PREF_LAST_FILE, path.toAbsolutePath().toString());
 
         } catch (IOException e) {
             statusLabel.setText("Error loading file: " + e.getMessage());
@@ -226,23 +257,22 @@ public class Main extends JFrame {
     private void checkAndAddName(int offset) {
         if (offset <= 1 || offset >= fileData.length) return;
 
-        // CRITICAL FILTER: Valid name slots in Darkstone are always preceded by a 0xAF byte (separator)
-        // AND another byte (usually 0xB7, 0xB4, 0xB3) which decodes to structural markers.
-        // Garbage names (like metadata blocks) have 0xAF but different sequences.
+        // CRITICAL FILTER: Valid name slots in Darkstone are always preceded by a marker byte.
+        // Known markers are 0xAF, 0xE0, 0xF6, 0xF7, 0xF1.
         int marker1 = fileData[offset - 1] & 0xFF;
-        int marker2 = fileData[offset - 2] & 0xFF;
-        if (marker1 != 0xAF) return;
-        
-        // Marker 2 check: legitimate slots have 0xB4, 0xB3, or 0xB7 before 0xAF.
-        if (marker2 != 0xB4 && marker2 != 0xB3 && marker2 != 0xB7) return;
+        if (marker1 != 0xAF && marker1 != 0xE0 && marker1 != 0xF6 && marker1 != 0xF7 && marker1 != 0xF1) return;
 
-        // ANTI-GARBAGE: Names must start with a valid printable character (A-Z, a-z, space, etc.)
+        // Marker 2 check: legitimate slots often have 0xB4, 0xB3, or 0xB7 before the primary marker.
+        // This helps filter out overlapping matches in metadata.
+        int marker2 = fileData[offset - 2] & 0xFF;
+        if (marker2 != 0xB4 && marker2 != 0xB3 && marker2 != 0xB7 && marker2 != 0xB5 && marker2 != 0xB6 && marker2 != 0x1A && marker2 != 0x17 && marker2 != 0x13 && marker2 != 0x19 && marker2 != 0xA2 && marker2 != 0xB0 && marker2 != 0xE1 && marker2 != 0xAD) return;
+
+        // ANTI-GARBAGE: Names must start with a valid character (A-Z, a-z, space, umlauts etc.)
         int firstChar = (fileData[offset] & 0xFF) ^ XOR_KEY;
-        if (firstChar < 32 || firstChar > 126) return;
+        if (firstChar < 32) return;
         
         // Metadata filtering: Skip common non-name printable characters found in metadata headers.
-        // We allow 'D' now (since DAMIAN starts with D), but rely on marker2 and padding to filter metadata.
-        if (firstChar == 'F' || firstChar == '7' || firstChar == '\\') return;
+        if (firstChar == 'F' || firstChar == '7' || firstChar == '\\' || firstChar == 'D') return;
         
         if (firstChar == 'P') {
             if (offset + 2 < fileData.length) {
@@ -262,7 +292,7 @@ public class Main extends JFrame {
             int b = fileData[offset + len] & 0xFF;
             int val = b ^ XOR_KEY;
             if (val == 0) break; // XOR null
-            if (val < 32 || val > 126) break; // Non-printable
+            if (val < 32) break; // Non-printable (control chars)
             len++;
         }
 
@@ -280,7 +310,8 @@ public class Main extends JFrame {
             }
 
             // Valid character slots have significant 0xEB padding after the name.
-            if (paddingCount >= 15 || (len > 30 && paddingCount >= 4)) {
+            // We use a high threshold (15) to ensure we're in a name slot.
+            if (paddingCount >= 15) {
                 String name = decode(fileData, offset, len).trim();
                 if (!name.isEmpty()) {
                     characterRecords.add(new CharacterRecord(name, offset));
@@ -330,11 +361,11 @@ public class Main extends JFrame {
         for (int i = 0; i < len; i++) {
             decoded[i] = (byte) ((data[offset + i] & 0xFF) ^ XOR_KEY);
         }
-        return new String(decoded);
+        return new String(decoded, java.nio.charset.StandardCharsets.ISO_8859_1);
     }
 
     private byte[] encode(String name) {
-        byte[] bytes = name.getBytes();
+        byte[] bytes = name.getBytes(java.nio.charset.StandardCharsets.ISO_8859_1);
         byte[] encoded = new byte[bytes.length];
         for (int i = 0; i < bytes.length; i++) {
             encoded[i] = (byte) ((bytes[i] & 0xFF) ^ XOR_KEY);
@@ -343,8 +374,9 @@ public class Main extends JFrame {
     }
 
     private boolean isPrintable(String s) {
-        for (char c : s.toCharArray()) {
-            if (c < 32 || c > 126) return false;
+        for (byte b : s.getBytes(java.nio.charset.StandardCharsets.ISO_8859_1)) {
+            int ub = b & 0xFF;
+            if (ub < 32) return false;
         }
         return true;
     }
