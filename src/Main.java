@@ -13,8 +13,6 @@ import java.util.prefs.Preferences;
 public class Main extends JFrame {
     private static final int XOR_KEY = 0xEB;
     private static final int MAX_NAME_LEN = 50;
-    private static final int SLOT_STRIDE = 0x65E0;
-    
     private static final String PREF_LAST_FILE = "last_lpl_file";
 
     private Path currentLplPath;
@@ -256,16 +254,35 @@ public class Main extends JFrame {
                 checkAndAddName(i, true, allCandidates);
             }
 
+            // Remove candidates where a shorter valid name ends at the same position.
+            // Handles false positives where binary metadata bytes before a real name
+            // happen to decode as uppercase letters with valid markers.
+            List<CharacterRecord> filteredCandidates = new ArrayList<>();
+            for (CharacterRecord candidate : allCandidates) {
+                int candidateEnd = candidate.offset + candidate.name.length();
+                boolean hasShorterValidSuffix = false;
+                for (CharacterRecord other : allCandidates) {
+                    if (other.offset > candidate.offset
+                            && other.offset < candidateEnd
+                            && other.offset + other.name.length() == candidateEnd) {
+                        hasShorterValidSuffix = true;
+                        break;
+                    }
+                }
+                if (!hasShorterValidSuffix) {
+                    filteredCandidates.add(candidate);
+                }
+            }
+
             // SECOND PASS: use slot stride (0x65E0) to filter duplicates
             // This ensures we only keep one character per slot
             characterRecords.clear();
-            int lastSlot = -0x65E0; // so first slot is accepted
-            for (CharacterRecord candidate : allCandidates) {
+            for (CharacterRecord candidate : filteredCandidates) {
                 int slotBase = candidate.offset;
                 // Check if this candidate is close to an already-accepted slot
                 boolean hasConflict = false;
                 for (CharacterRecord accepted : characterRecords) {
-                    if (Math.abs(accepted.offset - slotBase) < SLOT_STRIDE / 2) {
+                    if (Math.abs(accepted.offset - slotBase) < 32) {
                         hasConflict = true;
                         break;
                     }
@@ -304,9 +321,15 @@ public class Main extends JFrame {
         int firstChar = (fileData[offset] & 0xFF) ^ XOR_KEY;
         if (firstChar < 32) return;
         
-        // D is NOT filtered here because DIEBINA/DIEBINB are valid character names.
-        if (firstChar == 'F' || firstChar == '7' || firstChar == '\\') return;
-        
+        if (firstChar == '7' || firstChar == '\\') return;
+
+        // Metadata blocks start with repeated D's (DDDD...). Real names starting with D
+        // always have a different second character (e.g. "Diebin", "DIEBINA", "Dramian").
+        if (firstChar == 'D' && offset + 1 < fileData.length) {
+            int secondChar = (fileData[offset + 1] & 0xFF) ^ XOR_KEY;
+            if (secondChar == 'D') return;
+        }
+
         if (firstChar == 'P') {
             if (offset + 2 < fileData.length) {
                 int secondChar = (fileData[offset + 1] & 0xFF) ^ XOR_KEY;
@@ -316,24 +339,18 @@ public class Main extends JFrame {
         }
 
         int len = 0;
-        boolean allUppercase = true;
         while (len < MAX_NAME_LEN && offset + len < fileData.length) {
             int b = fileData[offset + len] & 0xFF;
             int val = b ^ XOR_KEY;
             if (val == 0) break;
-            if (val < 32) break;
-            // Darkstone character names: only uppercase A-Z is valid.
-            if (val < 'A' || val > 'Z') {
-                allUppercase = false;
-                break;
-            }
+            if (val < 32 || val == 0x7F || (val >= 0x80 && val <= 0x9F)) break;
             len++;
         }
 
-        if (len == 0 || !allUppercase) return;
+        if (len == 0) return;
 
         int paddingCount = 0;
-        int pos = offset + len;
+        int pos = offset + len + 4; // skip up to 4 class/type bytes that may follow name before padding
         while (pos < fileData.length && paddingCount < 25) {
             if ((fileData[pos] & 0xFF) == XOR_KEY) {
                 paddingCount++;
@@ -345,22 +362,13 @@ public class Main extends JFrame {
 
         if (paddingCount >= 15) {
             String name = decode(fileData, offset, len).trim();
-            boolean validName = true;
-            for (int i = 0; i < name.length(); i++) {
-                char c = name.charAt(i);
-                if (c < 'A' || c > 'Z') {
-                    validName = false;
-                    break;
-                }
-            }
-            if (!validName || name.isEmpty()) return;
-            
+            if (name.isEmpty()) return;
             collector.add(new CharacterRecord(name, offset));
         }
     }
 
     private void searchByName() {
-        String searchText = searchField.getText().toUpperCase().trim();
+        String searchText = searchField.getText().trim();
         if (searchText.isEmpty() || fileData == null) return;
 
         byte[] encoded = new byte[searchText.length()];
@@ -381,33 +389,34 @@ public class Main extends JFrame {
                     (m2 == 0xB4 || m2 == 0xB3 || m2 == 0xB7 || m2 == 0xB5 || m2 == 0xB6 || m2 == 0x1A || m2 == 0x17 || m2 == 0x13 || m2 == 0x19 || m2 == 0xA2 || m2 == 0xB0 || m2 == 0xE1 || m2 == 0xAD)) {
                     
                     int pad = 0;
-                    int p = idx + searchText.length();
+                    int p = idx + searchText.length() + 4; // skip up to 4 class/type bytes before padding
                     while (p < fileData.length && fileData[p] == (byte) XOR_KEY && pad < 25) {
                         pad++;
                         p++;
                     }
                     
                     if (pad >= 15) {
-                        boolean alreadyAdded = false;
                         String fullName = decode(fileData, idx, searchText.length()).trim();
+                        CharacterRecord existingRecord = null;
                         for (CharacterRecord r : characterRecords) {
-                            if (Math.abs(r.offset - idx) < 32) {
-                                alreadyAdded = true;
+                            if (r.offset == idx) {
+                                existingRecord = r;
                                 break;
                             }
                         }
-                        
-                        if (!alreadyAdded) {
-                            characterRecords.add(new CharacterRecord(fullName, idx));
+                        if (existingRecord == null) {
+                            existingRecord = new CharacterRecord(fullName, idx);
+                            characterRecords.add(existingRecord);
                             characterRecords.sort((a, b) -> Integer.compare(a.offset, b.offset));
                             DefaultListModel<CharacterRecord> model = new DefaultListModel<>();
                             for (CharacterRecord r : characterRecords) model.addElement(r);
                             characterList.setModel(model);
                             countLabel.setText("Characters: " + characterRecords.size());
-                            statusLabel.setText("Found: " + fullName + " at 0x" + Integer.toHexString(idx));
-                            found = true;
-                            break;
                         }
+                        characterList.setSelectedValue(existingRecord, true);
+                        statusLabel.setText("Found: " + fullName + " at 0x" + Integer.toHexString(idx).toUpperCase());
+                        found = true;
+                        break;
                     }
                 }
             }
