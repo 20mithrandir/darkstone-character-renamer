@@ -1,5 +1,4 @@
 import javax.swing.*;
-import javax.swing.filechooser.FileSystemView;
 import java.awt.*;
 import java.io.File;
 import java.io.IOException;
@@ -9,19 +8,11 @@ import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Optional;
 import java.util.prefs.Preferences;
 
 public class Main extends JFrame {
     private static final int XOR_KEY = 0xEB;
     private static final int MAX_NAME_LEN = 50;
-    private static final int NAME_FIELD_OFFSET_FROM_MATCH = -2; // Not used anymore but kept for compatibility if needed
-    
-    private static final int PAGE_SIZE = 0x65E0;
-    private static final int SLOT_SIZE = 0x8C;
-    private static final int START_OFFSET = 0x669A;
-    private static final int MAX_PAGES = 50;
-    private static final int MAX_SLOTS = 186;
     private static final String PREF_LAST_FILE = "last_lpl_file";
 
     private Path currentLplPath;
@@ -32,10 +23,12 @@ public class Main extends JFrame {
     private final JTextField nameField;
     private final JButton saveButton;
     private final JLabel statusLabel;
+    private final JLabel countLabel;
+    private final JTextField searchField;
 
     public Main() {
-        setTitle("DarkStone Character Renamer v1.0.0");
-        setSize(800, 450); // Increased default size
+        setTitle("DarkStone Character Renamer v1.0.1");
+        setSize(800, 450);
         setDefaultCloseOperation(EXIT_ON_CLOSE);
         setLayout(new BorderLayout());
 
@@ -44,6 +37,8 @@ public class Main extends JFrame {
         saveButton = new JButton("Save Name");
         JButton openButton = new JButton("Open Save...");
         statusLabel = new JLabel("Searching for DarkStone...");
+        countLabel = new JLabel("Characters: 0");
+        searchField = new JTextField();
 
         characterList.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
         characterList.addListSelectionListener(e -> {
@@ -64,6 +59,9 @@ public class Main extends JFrame {
 
         openButton.addActionListener(e -> openManualFile());
 
+        JButton searchButton = new JButton("Search Name");
+        searchButton.addActionListener(e -> searchByName());
+
         JButton quitButton = new JButton("Quit");
         quitButton.addActionListener(e -> System.exit(0));
 
@@ -83,11 +81,27 @@ public class Main extends JFrame {
 
         gbc.gridy = 2;
         gbc.weightx = 0.0;
-        gbc.insets = new Insets(10, 10, 5, 10);
+        gbc.insets = new Insets(5, 10, 5, 10);
         rightPanel.add(saveButton, gbc);
 
+        // Search by name section
         gbc.gridy = 3;
-        gbc.weighty = 1.0; // Push everything up
+        gbc.weightx = 1.0;
+        gbc.insets = new Insets(10, 10, 0, 10);
+        rightPanel.add(new JLabel("Search Name:"), gbc);
+
+        gbc.gridy = 4;
+        gbc.weightx = 1.0;
+        gbc.insets = new Insets(0, 10, 5, 10);
+        rightPanel.add(searchField, gbc);
+
+        gbc.gridy = 5;
+        gbc.weightx = 0.0;
+        gbc.insets = new Insets(0, 10, 10, 10);
+        rightPanel.add(searchButton, gbc);
+
+        gbc.gridy = 6;
+        gbc.weighty = 1.0;
         gbc.anchor = GridBagConstraints.NORTH;
         gbc.insets = new Insets(5, 10, 10, 10);
         rightPanel.add(quitButton, gbc);
@@ -95,9 +109,14 @@ public class Main extends JFrame {
         JScrollPane scrollPane = new JScrollPane(characterList);
         scrollPane.setMinimumSize(new Dimension(300, 0));
         
-        JSplitPane splitPane = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT, scrollPane, rightPanel);
+        // Panel that contains list + count label
+        JPanel leftPanel = new JPanel(new BorderLayout());
+        leftPanel.add(scrollPane, BorderLayout.CENTER);
+        leftPanel.add(countLabel, BorderLayout.SOUTH);
+        
+        JSplitPane splitPane = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT, leftPanel, rightPanel);
         splitPane.setDividerLocation(350);
-        splitPane.setResizeWeight(0.3); // Favor the list panel but allow some right-panel growth
+        splitPane.setResizeWeight(0.3);
 
         JPanel footerPanel = new JPanel(new BorderLayout());
         footerPanel.setBorder(BorderFactory.createEmptyBorder(5, 5, 5, 5));
@@ -115,7 +134,6 @@ public class Main extends JFrame {
     }
 
     private void findAndLoadFile() {
-        // 0. Check preferences for sticky file
         Preferences prefs = Preferences.userNodeForPackage(Main.class);
         String lastFile = prefs.get(PREF_LAST_FILE, null);
         if (lastFile != null) {
@@ -126,7 +144,6 @@ public class Main extends JFrame {
             }
         }
 
-        // 1. Check current directory first
         Path currentDirFile = Path.of("save", "characters", "characters.lpl");
         if (Files.exists(currentDirFile)) {
             loadLplFile(currentDirFile);
@@ -138,10 +155,8 @@ public class Main extends JFrame {
             return;
         }
 
-        // 2. Dynamic scan on all root drives
         File[] drives = File.listRoots();
         if (drives != null) {
-            // Re-order to prioritize C:
             List<File> driveList = new ArrayList<>(List.of(drives));
             driveList.sort((a, b) -> {
                 if (a.getPath().startsWith("C")) return -1;
@@ -150,7 +165,7 @@ public class Main extends JFrame {
             });
 
             for (File drive : driveList) {
-                Path found = scanForFile(drive.toPath(), 3); // Depth 3 to find it in "Games/Darkstone" or "Darkstone"
+                Path found = scanForFile(drive.toPath(), 3);
                 if (found != null) {
                     loadLplFile(found);
                     return;
@@ -158,7 +173,6 @@ public class Main extends JFrame {
             }
         }
 
-        // 3. Fallback to File Chooser
         openManualFile();
     }
 
@@ -194,7 +208,6 @@ public class Main extends JFrame {
 
             for (File f : topLevel) {
                 if (f.isDirectory() && !f.isHidden() && f.canRead()) {
-                    // Check for [DRIVE]\[DIR]\save\characters\characters.lpl
                     File sDir = new File(f, "save");
                     if (sDir.exists()) {
                         File cDir = new File(sDir, "characters");
@@ -204,7 +217,6 @@ public class Main extends JFrame {
                         }
                     }
                     
-                    // One level deeper: [DRIVE]\[DIR]\[DIR]\save\characters\characters.lpl
                     File[] sub = f.listFiles();
                     if (sub != null) {
                         for (File s : sub) {
@@ -234,18 +246,61 @@ public class Main extends JFrame {
             fileData = Files.readAllBytes(path);
             characterRecords.clear();
 
-            // We use a linear scan but with extremely high quality requirements to avoid garbage.
-            // A valid name MUST be preceded by specific markers and followed by significant 0xEB padding.
-            for (int i = 1; i < fileData.length - MAX_NAME_LEN; i++) {
-                checkAndAddName(i);
+            // FIRST PASS: scan for ALL valid name candidates (marker + padding check)
+            // without any proximity filter, to find all potential matches
+            List<CharacterRecord> allCandidates = new ArrayList<>();
+            
+            for (int i = 2; i < fileData.length - MAX_NAME_LEN; i++) {
+                checkAndAddName(i, true, allCandidates);
             }
+
+            // Remove candidates where a shorter valid name ends at the same position.
+            // Handles false positives where binary metadata bytes before a real name
+            // happen to decode as uppercase letters with valid markers.
+            List<CharacterRecord> filteredCandidates = new ArrayList<>();
+            for (CharacterRecord candidate : allCandidates) {
+                int candidateEnd = candidate.offset + candidate.name.length();
+                boolean hasShorterValidSuffix = false;
+                for (CharacterRecord other : allCandidates) {
+                    if (other.offset > candidate.offset
+                            && other.offset < candidateEnd
+                            && other.offset + other.name.length() == candidateEnd) {
+                        hasShorterValidSuffix = true;
+                        break;
+                    }
+                }
+                if (!hasShorterValidSuffix) {
+                    filteredCandidates.add(candidate);
+                }
+            }
+
+            // SECOND PASS: use slot stride (0x65E0) to filter duplicates
+            // This ensures we only keep one character per slot
+            characterRecords.clear();
+            for (CharacterRecord candidate : filteredCandidates) {
+                int slotBase = candidate.offset;
+                // Check if this candidate is close to an already-accepted slot
+                boolean hasConflict = false;
+                for (CharacterRecord accepted : characterRecords) {
+                    if (Math.abs(accepted.offset - slotBase) < 32) {
+                        hasConflict = true;
+                        break;
+                    }
+                }
+                if (!hasConflict) {
+                    characterRecords.add(candidate);
+                }
+            }
+
+            // Sort by offset
+            characterRecords.sort((a, b) -> Integer.compare(a.offset, b.offset));
 
             DefaultListModel<CharacterRecord> model = new DefaultListModel<>();
             for (CharacterRecord r : characterRecords) model.addElement(r);
             characterList.setModel(model);
+            countLabel.setText("Characters: " + characterRecords.size());
             statusLabel.setText("Loaded: " + path);
 
-            // Save to preferences
             Preferences prefs = Preferences.userNodeForPackage(Main.class);
             prefs.put(PREF_LAST_FILE, path.toAbsolutePath().toString());
 
@@ -254,26 +309,27 @@ public class Main extends JFrame {
         }
     }
 
-    private void checkAndAddName(int offset) {
+    private void checkAndAddName(int offset, boolean collectAll, List<CharacterRecord> collector) {
         if (offset <= 1 || offset >= fileData.length) return;
 
-        // CRITICAL FILTER: Valid name slots in Darkstone are always preceded by a marker byte.
-        // Known markers are 0xAF, 0xE0, 0xF6, 0xF7, 0xF1.
         int marker1 = fileData[offset - 1] & 0xFF;
         if (marker1 != 0xAF && marker1 != 0xE0 && marker1 != 0xF6 && marker1 != 0xF7 && marker1 != 0xF1) return;
 
-        // Marker 2 check: legitimate slots often have 0xB4, 0xB3, or 0xB7 before the primary marker.
-        // This helps filter out overlapping matches in metadata.
         int marker2 = fileData[offset - 2] & 0xFF;
         if (marker2 != 0xB4 && marker2 != 0xB3 && marker2 != 0xB7 && marker2 != 0xB5 && marker2 != 0xB6 && marker2 != 0x1A && marker2 != 0x17 && marker2 != 0x13 && marker2 != 0x19 && marker2 != 0xA2 && marker2 != 0xB0 && marker2 != 0xE1 && marker2 != 0xAD) return;
 
-        // ANTI-GARBAGE: Names must start with a valid character (A-Z, a-z, space, umlauts etc.)
         int firstChar = (fileData[offset] & 0xFF) ^ XOR_KEY;
         if (firstChar < 32) return;
         
-        // Metadata filtering: Skip common non-name printable characters found in metadata headers.
-        if (firstChar == 'F' || firstChar == '7' || firstChar == '\\' || firstChar == 'D') return;
-        
+        if (firstChar == '7' || firstChar == '\\') return;
+
+        // Metadata blocks start with repeated D's (DDDD...). Real names starting with D
+        // always have a different second character (e.g. "Diebin", "DIEBINA", "Dramian").
+        if (firstChar == 'D' && offset + 1 < fileData.length) {
+            int secondChar = (fileData[offset + 1] & 0xFF) ^ XOR_KEY;
+            if (secondChar == 'D') return;
+        }
+
         if (firstChar == 'P') {
             if (offset + 2 < fileData.length) {
                 int secondChar = (fileData[offset + 1] & 0xFF) ^ XOR_KEY;
@@ -282,42 +338,108 @@ public class Main extends JFrame {
             }
         }
 
-        // Check for duplicate or partial names
-        for (CharacterRecord r : characterRecords) {
-            if (Math.abs(r.offset - offset) < 32) return;
-        }
-
         int len = 0;
         while (len < MAX_NAME_LEN && offset + len < fileData.length) {
             int b = fileData[offset + len] & 0xFF;
             int val = b ^ XOR_KEY;
-            if (val == 0) break; // XOR null
-            if (val < 32) break; // Non-printable (control chars)
+            if (val == 0) break;
+            if (val < 32 || val == 0x7F || (val >= 0x80 && val <= 0x9F)) break;
             len++;
         }
 
-        // HEURISTIC: Genuine character names are followed by significant 0xEB padding.
-        if (len > 0) {
-            int paddingCount = 0;
-            int pos = offset + len;
-            while (pos < fileData.length && paddingCount < 25) {
-                if ((fileData[pos] & 0xFF) == XOR_KEY) {
-                    paddingCount++;
-                    pos++;
-                } else {
+        if (len == 0) return;
+
+        int paddingCount = 0;
+        int pos = offset + len + 4; // skip up to 4 class/type bytes that may follow name before padding
+        while (pos < fileData.length && paddingCount < 25) {
+            if ((fileData[pos] & 0xFF) == XOR_KEY) {
+                paddingCount++;
+                pos++;
+            } else {
+                break;
+            }
+        }
+
+        if (paddingCount >= 15) {
+            String name = decode(fileData, offset, len).trim();
+            if (name.isEmpty()) return;
+            collector.add(new CharacterRecord(name, offset));
+        }
+    }
+
+    private void searchByName() {
+        String searchText = searchField.getText().trim();
+        if (searchText.isEmpty() || fileData == null) return;
+
+        byte[] encoded = new byte[searchText.length()];
+        for (int i = 0; i < searchText.length(); i++) {
+            encoded[i] = (byte) ((searchText.charAt(i) & 0xFF) ^ XOR_KEY);
+        }
+
+        int searchOffset = 0;
+        boolean found = false;
+        while (true) {
+            int idx = indexOf(fileData, encoded, searchOffset);
+            if (idx < 0) break;
+            
+            if (idx >= 2) {
+                int m1 = fileData[idx - 1] & 0xFF;
+                int m2 = fileData[idx - 2] & 0xFF;
+                if ((m1 == 0xAF || m1 == 0xE0 || m1 == 0xF6 || m1 == 0xF7 || m1 == 0xF1) &&
+                    (m2 == 0xB4 || m2 == 0xB3 || m2 == 0xB7 || m2 == 0xB5 || m2 == 0xB6 || m2 == 0x1A || m2 == 0x17 || m2 == 0x13 || m2 == 0x19 || m2 == 0xA2 || m2 == 0xB0 || m2 == 0xE1 || m2 == 0xAD)) {
+                    
+                    int pad = 0;
+                    int p = idx + searchText.length() + 4; // skip up to 4 class/type bytes before padding
+                    while (p < fileData.length && fileData[p] == (byte) XOR_KEY && pad < 25) {
+                        pad++;
+                        p++;
+                    }
+                    
+                    if (pad >= 15) {
+                        String fullName = decode(fileData, idx, searchText.length()).trim();
+                        CharacterRecord existingRecord = null;
+                        for (CharacterRecord r : characterRecords) {
+                            if (r.offset == idx) {
+                                existingRecord = r;
+                                break;
+                            }
+                        }
+                        if (existingRecord == null) {
+                            existingRecord = new CharacterRecord(fullName, idx);
+                            characterRecords.add(existingRecord);
+                            characterRecords.sort((a, b) -> Integer.compare(a.offset, b.offset));
+                            DefaultListModel<CharacterRecord> model = new DefaultListModel<>();
+                            for (CharacterRecord r : characterRecords) model.addElement(r);
+                            characterList.setModel(model);
+                            countLabel.setText("Characters: " + characterRecords.size());
+                        }
+                        characterList.setSelectedValue(existingRecord, true);
+                        statusLabel.setText("Found: " + fullName + " at 0x" + Integer.toHexString(idx).toUpperCase());
+                        found = true;
+                        break;
+                    }
+                }
+            }
+            searchOffset = idx + 1;
+        }
+
+        if (!found) {
+            statusLabel.setText("Name '" + searchText + "' not found in file.");
+        }
+    }
+
+    private static int indexOf(byte[] data, byte[] pattern, int startOffset) {
+        for (int i = startOffset; i <= data.length - pattern.length; i++) {
+            boolean match = true;
+            for (int j = 0; j < pattern.length; j++) {
+                if (data[i + j] != pattern[j]) {
+                    match = false;
                     break;
                 }
             }
-
-            // Valid character slots have significant 0xEB padding after the name.
-            // We use a high threshold (15) to ensure we're in a name slot.
-            if (paddingCount >= 15) {
-                String name = decode(fileData, offset, len).trim();
-                if (!name.isEmpty()) {
-                    characterRecords.add(new CharacterRecord(name, offset));
-                }
-            }
+            if (match) return i;
         }
+        return -1;
     }
 
     private void performRename() {
@@ -326,17 +448,12 @@ public class Main extends JFrame {
         if (selected == null || newName.isEmpty()) return;
 
         try {
-            // Backup with timestamp
             long timestamp = System.currentTimeMillis() / 1000L;
             Path backup = currentLplPath.resolveSibling(currentLplPath.getFileName().toString() + ".bak." + timestamp);
             Files.copy(currentLplPath, backup, StandardCopyOption.REPLACE_EXISTING);
 
-            // Applying the change
             byte[] encoded = encode(newName);
-            
-            // Fixed buffer size for names in Darkstone is approximately 60 bytes.
-            // We use a safe 60-byte buffer to avoid overwriting structural data.
-            int totalBuffer = 60; 
+            int totalBuffer = 60;
             
             for (int i = 0; i < totalBuffer; i++) {
                 if (i < encoded.length) {
@@ -371,14 +488,6 @@ public class Main extends JFrame {
             encoded[i] = (byte) ((bytes[i] & 0xFF) ^ XOR_KEY);
         }
         return encoded;
-    }
-
-    private boolean isPrintable(String s) {
-        for (byte b : s.getBytes(java.nio.charset.StandardCharsets.ISO_8859_1)) {
-            int ub = b & 0xFF;
-            if (ub < 32) return false;
-        }
-        return true;
     }
 
     private static class CharacterRecord {

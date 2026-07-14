@@ -1,0 +1,80 @@
+Let's do this methodically. We still don't have a proper identification of all characters in the tool. So I created different save files with just one type of character twice. We need to check prefixes and offsets and how they differ for different types of characters.
+
+First of all: There are four different character types and there are male and female versions of those, so we have 4 x 2 = 8 types of characters. I will note down example files and current detection here.
+
+1. Krieger (male warrior)
+File examples/new/characters.lpl.kriegerab
+Named "KRIEGERA" and "KRIEGERB"
+Tool finds both characters:
+- KRIEGERA (0x0000016A)
+- KRIEGERB (0x0000674A)
+
+2. Kriegerin (female warrior, also called amazon)
+File examples/new/characters.lpl.kriegerinab
+Named "KRIEGERINA" and "KRIEGERINB"
+Tool finds both characters:
+- KRIEGERINA (0x0000012A)
+- KRIEGERINB (0x0000670A)
+Offsets are different from the male versions though!
+
+3.  Magier (male mage/sorcerer)
+File examples/new/characters.lpl.magierab
+Named "MAGIERA" and "MAGIERB"
+Tool finds both characters:
+- MAGIERA (0x0000668C)
+- MAGIERB (0x0000CC6C)
+Again with different offsets
+
+4. Magierin (female mage/sorceress)
+File examples/new/characters.lpl.magierinab
+Named "MAGIERINA" and "MAGIERINGB"
+Tool finds both characters:
+- MAGIERINA (0x0000012A)
+- MAGIERINB (0x00006B6C)
+Again with different offsets
+
+5. Meuchler (male thief/assassin)
+File examples/new/characters.lpl.meuchlerab
+Named "MEUCHLERA" and "MEUCHLERB"
+Tool finds both characters:
+- MEUCHLERA (0x00006678)
+- MEUCHLERB (0x0000CC58)
+Again with different offsets
+
+6. Diebin (female thief/assassin)
+File examples/new/characters.lpl.diebinab
+Named "DIEBINA" and "DIEBINB"
+Tool finds no characters in this file (I believe the starting D might be relevant)
+
+7. Mönch (male monk)
+File examples/new/characters.lpl.moenchab
+Named "MOENCHA" and "MOENCHB"
+Tool finds both characters:
+- MOENCHA (0x0000055A)
+- MOENCHB (0x00006B3A)
+Again with different offsets
+
+8. Priesterin (female monk/priestess)
+File examples/new/characters.lpl.priesteriab
+Named "PRIESTERIA" and "PRIESTERIB"
+Tool finds both characters:
+- PRIESTERIA (0x0000012A)
+- PRIESTERIB (0x0000670A)
+Again with different offsets
+
+Now let's combine all of those 16 characters in a single file and check that:
+File examples/new/characters.lpl.16
+Shows only 10 of 16 characters:
+- KRIEGERA (0x0000017A)
+- KRIEGERB (0x0000675A)
+- KRIEGERINA (0x0000CD3A)
+- KRIEGERINB (0x0001331A)
+- MAGIERINA (0x000268CC)
+- MAGIERINB (0x0002CEAC)
+- MEUCHLERA (0x0003348C)
+- MEUCHLERB (0x00039A6C)
+- PRIESTERIA (0x0005F8CA)
+- PRIESTERIB (0x00065EAA)
+It's missing these 6 character: "DIEBINA", "DIEBINB", "MAGIERA", "MAGIERB", "MOENCHA", "MOENCHB"
+
+That's a good set of example data to analyze, I hope. Can you work with that and find out why our identification logic does not always work?
