@@ -240,16 +240,54 @@ public class Main extends JFrame {
         return null;
     }
 
+    private static final int SLOT_SIZE = 0x65E0;
+
+    private static boolean isValidNameStart(int c) {
+        return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')
+                || c == 0xC4 || c == 0xD6 || c == 0xDC  // Ä Ö Ü
+                || c == 0xE4 || c == 0xF6 || c == 0xFC  // ä ö ü
+                || c == 0xDF;                             // ß
+    }
+
+    private static boolean isValidNameChar(int c) {
+        return isValidNameStart(c) || c == ' ' || c == '-' || c == '\'';
+    }
+
+    // Returns true when a decoded candidate is a structural artifact, not a real character name.
+    //
+    // "DD" suffix: raw bytes 0xAF 0xAF appear before an empty name buffer (the game's
+    // default fill for unused slots).  The slot scan mistakes these pre-marker bytes for
+    // the tail of a name.  Real character names never end in "DD".
+    //
+    // High-run ratio: long runs of one letter (e.g. "DDDDDDD" from 0xAF fill, "FFFFFFF"
+    // from 0xAD fill) indicate the scan walked across structural padding bytes.
+    private static boolean isStructuralFill(String name) {
+        // Artifact: ends with the two-byte 0xAF 0xAF pre-marker pattern (decoded as "DD")
+        if (name.endsWith("DD")) return true;
+
+        // Artifact: dominated by a single repeated character (≥6 run, >50% of name)
+        if (name.length() < 3) return false;
+        int maxRun = 1, curRun = 1;
+        for (int i = 1; i < name.length(); i++) {
+            if (name.charAt(i) == name.charAt(i - 1)) {
+                curRun++;
+                if (curRun > maxRun) maxRun = curRun;
+            } else {
+                curRun = 1;
+            }
+        }
+        return maxRun >= 6 && (maxRun * 100 / name.length()) > 50;
+    }
+
     private void loadLplFile(Path path) {
         try {
             currentLplPath = path;
             fileData = Files.readAllBytes(path);
             characterRecords.clear();
 
-            // FIRST PASS: scan for ALL valid name candidates (marker + padding check)
-            // without any proximity filter, to find all potential matches
+            // FIRST PASS: marker-based scan (pre-byte patterns + padding)
             List<CharacterRecord> allCandidates = new ArrayList<>();
-            
+
             for (int i = 2; i < fileData.length - MAX_NAME_LEN; i++) {
                 checkAndAddName(i, true, allCandidates);
             }
@@ -277,21 +315,101 @@ public class Main extends JFrame {
                 }
             }
 
-            // SECOND PASS: use slot stride (0x65E0) to filter duplicates
-            // This ensures we only keep one character per slot
+            // SECOND PASS: proximity dedup — keep one character per cluster
             characterRecords.clear();
             for (CharacterRecord candidate : filteredCandidates) {
-                int slotBase = candidate.offset;
-                // Check if this candidate is close to an already-accepted slot
                 boolean hasConflict = false;
                 for (CharacterRecord accepted : characterRecords) {
-                    if (Math.abs(accepted.offset - slotBase) < 32) {
+                    if (Math.abs(accepted.offset - candidate.offset) < 32) {
                         hasConflict = true;
                         break;
                     }
                 }
                 if (!hasConflict) {
                     characterRecords.add(candidate);
+                }
+            }
+
+            // THIRD PASS: slot-based scan — navigate directly to each slot and
+            // look for clean names (alphabetic + XOR padding) without requiring
+            // specific pre-byte marker patterns.  Catches characters whose
+            // surrounding bytes fall outside the known marker sets.
+            //
+            // Key filter: only start a candidate where the byte immediately before
+            // does NOT decode to a letter.  A letter before the start means we are
+            // mid-word (a suffix of a longer name), so we skip.  Non-letter pre-bytes
+            // (space, backslash, non-printables, type/structural bytes) are the normal
+            // separator that precedes a genuine name field.
+            int headerSize = fileData.length % SLOT_SIZE;
+            int numSlots = (fileData.length - headerSize) / SLOT_SIZE;
+
+            List<CharacterRecord> slotCandidates = new ArrayList<>();
+            for (int slotIdx = 0; slotIdx < numSlots; slotIdx++) {
+                int slotStart = headerSize + slotIdx * SLOT_SIZE;
+                int slotEnd = slotStart + SLOT_SIZE;
+
+                for (int off = slotStart + 4; off < slotEnd - 64; off++) {
+                    // If the byte before this position decodes to a letter, we are
+                    // mid-name — skip to avoid suffix false-positives.
+                    int prevDecoded = (fileData[off - 1] & 0xFF) ^ XOR_KEY;
+                    if (isValidNameStart(prevDecoded)) continue;
+
+                    int c0 = (fileData[off] & 0xFF) ^ XOR_KEY;
+                    if (!isValidNameStart(c0)) continue;
+
+                    int len = 0;
+                    while (len < MAX_NAME_LEN && off + len < slotEnd) {
+                        int c = (fileData[off + len] & 0xFF) ^ XOR_KEY;
+                        if (c == 0 || !isValidNameChar(c)) break;
+                        len++;
+                    }
+                    if (len < 4) continue;
+
+                    int pad = 0;
+                    int padPos = off + len;
+                    while (padPos + pad < fileData.length && pad < 30
+                            && (fileData[padPos + pad] & 0xFF) == XOR_KEY) {
+                        pad++;
+                    }
+                    if (pad < 15) continue;
+
+                    String name = decode(fileData, off, len).trim();
+                    if (!name.isEmpty() && !isStructuralFill(name)) {
+                        slotCandidates.add(new CharacterRecord(name, off, 0));
+                    }
+                }
+            }
+
+            // When two candidates end at the same position, prefer the SHORTER one:
+            // the longer one has a spurious prefix (e.g. "E Priesterin" → keep "Priesterin").
+            List<CharacterRecord> filteredSlot = new ArrayList<>();
+            for (CharacterRecord cand : slotCandidates) {
+                int candEnd = cand.offset + cand.name.length();
+                boolean hasShorterAtSameEnd = false;
+                for (CharacterRecord other : slotCandidates) {
+                    if (other != cand
+                            && other.offset > cand.offset
+                            && (other.offset + other.name.length()) == candEnd) {
+                        hasShorterAtSameEnd = true;
+                        break;
+                    }
+                }
+                if (!hasShorterAtSameEnd) {
+                    filteredSlot.add(cand);
+                }
+            }
+
+            // Merge: add slot-found characters not already covered by marker scan
+            for (CharacterRecord slotChar : filteredSlot) {
+                boolean alreadyFound = false;
+                for (CharacterRecord existing : characterRecords) {
+                    if (Math.abs(existing.offset - slotChar.offset) < 32) {
+                        alreadyFound = true;
+                        break;
+                    }
+                }
+                if (!alreadyFound) {
+                    characterRecords.add(slotChar);
                 }
             }
 
