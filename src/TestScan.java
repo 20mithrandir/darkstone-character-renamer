@@ -120,6 +120,13 @@ public class TestScan {
          && m2!=0x17 && m2!=0x13 && m2!=0x19 && m2!=0xA2 && m2!=0xB0 && m2!=0xE1 && m2!=0xAD) return;
         int fc = (data[off] & 0xFF) ^ XOR_KEY;
         if (fc < 32 || fc == '7' || fc == '\\') return;
+        // Non-letter printable prefix (e.g. '|' before "Schwerter"): advance to first real letter
+        if (!isNameStart(fc) && fc != ' ' && fc != '-' && fc != '\'') {
+            int skip=0;
+            while (skip<3 && off+skip<data.length) { if(isNameStart((data[off+skip]&0xFF)^XOR_KEY)) break; skip++; }
+            if (skip==0||skip>=3) return;
+            off+=skip; fc=(data[off]&0xFF)^XOR_KEY;
+        }
         if (fc == 'D' && off+1 < data.length && ((data[off+1]&0xFF)^XOR_KEY) == 'D') return;
         if (fc == 'P' && off+2 < data.length && ((data[off+1]&0xFF)^XOR_KEY) == '7'
                       && ((data[off+2]&0xFF)^XOR_KEY) == '\\') return;

@@ -27,7 +27,7 @@ public class Main extends JFrame {
     private final JTextField searchField;
 
     public Main() {
-        setTitle("DarkStone Character Renamer v1.0.1");
+        setTitle("DarkStone Character Renamer v1.0.2");
         setSize(800, 450);
         setDefaultCloseOperation(EXIT_ON_CLOSE);
         setLayout(new BorderLayout());
@@ -441,8 +441,24 @@ public class Main extends JFrame {
 
         int firstChar = (fileData[offset] & 0xFF) ^ XOR_KEY;
         if (firstChar < 32) return;
-        
+
         if (firstChar == '7' || firstChar == '\\') return;
+
+        // If first char is non-letter printable ASCII (like '|', '%', '>') followed by a letter
+        // or space, the marker scan started 1-2 bytes early (the pre-byte was the true marker).
+        // Advance offset to the first real letter so the name is stored without the prefix.
+        if (!isValidNameStart(firstChar) && firstChar != ' ' && firstChar != '-' && firstChar != '\'') {
+            // Advance past up to 2 non-letter prefix chars to find the real name start
+            int skip = 0;
+            while (skip < 3 && offset + skip < fileData.length) {
+                int c = (fileData[offset + skip] & 0xFF) ^ XOR_KEY;
+                if (isValidNameStart(c)) break;
+                skip++;
+            }
+            if (skip == 0 || skip >= 3) return; // no improvement possible
+            offset += skip;
+            firstChar = (fileData[offset] & 0xFF) ^ XOR_KEY;
+        }
 
         // Metadata blocks start with repeated D's (DDDD...). Real names starting with D
         // always have a different second character (e.g. "Diebin", "DIEBINA", "Dramian").
