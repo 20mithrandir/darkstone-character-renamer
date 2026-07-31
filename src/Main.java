@@ -254,22 +254,25 @@ public class Main extends JFrame {
                 checkAndAddName(i, true, allCandidates);
             }
 
-            // Remove candidates where a shorter valid name ends at the same position.
-            // Handles false positives where binary metadata bytes before a real name
-            // happen to decode as uppercase letters with valid markers.
+            // Remove candidates where a shorter valid name ends at the same position,
+            // but only when the shorter name has a primary marker (0xAF/0xE0/0xF6/0xF7/0xF1).
+            // 0xAE is an extended marker that coincides with XOR-encoded letters inside real
+            // names (e.g. 'E'^0xEB=0xAE), so a shorter suffix with 0xAE is a false positive,
+            // not a reason to discard the longer real name.
             List<CharacterRecord> filteredCandidates = new ArrayList<>();
             for (CharacterRecord candidate : allCandidates) {
                 int candidateEnd = candidate.offset + candidate.name.length();
-                boolean hasShorterValidSuffix = false;
+                boolean hasShorterPrimaryMarkerSuffix = false;
                 for (CharacterRecord other : allCandidates) {
                     if (other.offset > candidate.offset
                             && other.offset < candidateEnd
-                            && other.offset + other.name.length() == candidateEnd) {
-                        hasShorterValidSuffix = true;
+                            && other.offset + other.name.length() == candidateEnd
+                            && other.marker1 != 0xAE) {
+                        hasShorterPrimaryMarkerSuffix = true;
                         break;
                     }
                 }
-                if (!hasShorterValidSuffix) {
+                if (!hasShorterPrimaryMarkerSuffix) {
                     filteredCandidates.add(candidate);
                 }
             }
@@ -313,7 +316,7 @@ public class Main extends JFrame {
         if (offset <= 1 || offset >= fileData.length) return;
 
         int marker1 = fileData[offset - 1] & 0xFF;
-        if (marker1 != 0xAF && marker1 != 0xE0 && marker1 != 0xF6 && marker1 != 0xF7 && marker1 != 0xF1) return;
+        if (marker1 != 0xAF && marker1 != 0xE0 && marker1 != 0xF6 && marker1 != 0xF7 && marker1 != 0xF1 && marker1 != 0xAE) return;
 
         int marker2 = fileData[offset - 2] & 0xFF;
         if (marker2 != 0xB4 && marker2 != 0xB3 && marker2 != 0xB7 && marker2 != 0xB5 && marker2 != 0xB6 && marker2 != 0x1A && marker2 != 0x17 && marker2 != 0x13 && marker2 != 0x19 && marker2 != 0xA2 && marker2 != 0xB0 && marker2 != 0xE1 && marker2 != 0xAD) return;
@@ -363,7 +366,7 @@ public class Main extends JFrame {
         if (paddingCount >= 15) {
             String name = decode(fileData, offset, len).trim();
             if (name.isEmpty()) return;
-            collector.add(new CharacterRecord(name, offset));
+            collector.add(new CharacterRecord(name, offset, marker1));
         }
     }
 
@@ -385,7 +388,7 @@ public class Main extends JFrame {
             if (idx >= 2) {
                 int m1 = fileData[idx - 1] & 0xFF;
                 int m2 = fileData[idx - 2] & 0xFF;
-                if ((m1 == 0xAF || m1 == 0xE0 || m1 == 0xF6 || m1 == 0xF7 || m1 == 0xF1) &&
+                if ((m1 == 0xAF || m1 == 0xE0 || m1 == 0xF6 || m1 == 0xF7 || m1 == 0xF1 || m1 == 0xAE) &&
                     (m2 == 0xB4 || m2 == 0xB3 || m2 == 0xB7 || m2 == 0xB5 || m2 == 0xB6 || m2 == 0x1A || m2 == 0x17 || m2 == 0x13 || m2 == 0x19 || m2 == 0xA2 || m2 == 0xB0 || m2 == 0xE1 || m2 == 0xAD)) {
                     
                     int pad = 0;
@@ -405,7 +408,7 @@ public class Main extends JFrame {
                             }
                         }
                         if (existingRecord == null) {
-                            existingRecord = new CharacterRecord(fullName, idx);
+                            existingRecord = new CharacterRecord(fullName, idx, m1);
                             characterRecords.add(existingRecord);
                             characterRecords.sort((a, b) -> Integer.compare(a.offset, b.offset));
                             DefaultListModel<CharacterRecord> model = new DefaultListModel<>();
@@ -493,10 +496,12 @@ public class Main extends JFrame {
     private static class CharacterRecord {
         String name;
         int offset;
+        int marker1;
 
-        CharacterRecord(String name, int offset) {
+        CharacterRecord(String name, int offset, int marker1) {
             this.name = name;
             this.offset = offset;
+            this.marker1 = marker1;
         }
 
         @Override
